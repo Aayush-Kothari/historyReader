@@ -35,6 +35,10 @@ const DEFAULT_SETTINGS = {
   autoAdvance: false,
   teamMode: false,
   bonuses: true,
+  sound: false,
+  theme: "light",
+  focus: false,
+  textScale: 1,
   title: "History Room",
 };
 
@@ -56,6 +60,33 @@ function saveKey(key, value) {
   return Promise.resolve();
 }
 const uid = () => Math.random().toString(36).slice(2, 10);
+let audioCtx = null;
+function beep() {
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    const o = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    o.type = "square";
+    o.frequency.value = 880;
+    g.gain.value = 0.07;
+    o.connect(g);
+    g.connect(audioCtx.destination);
+    o.start();
+    o.stop(audioCtx.currentTime + 0.12);
+  } catch (e) { /* no audio */ }
+}
+function downloadCsv(results) {
+  const cols = ["ts", "sessionId", "kind", "mode", "difficulty", "source", "subcat", "outcome", "tier", "interrupted", "pts", "celerity", "answer", "given", "set", "player", "theme", "correct", "parts"];
+  const esc = (v) => (v === undefined || v === null ? "" : `"${String(v).replace(/"/g, '""')}"`);
+  const lines = [cols.join(","), ...results.map((r) => cols.map((c) => esc(c === "ts" ? new Date(r.ts).toISOString() : r[c])).join(","))];
+  const blob = new Blob([lines.join("\n")], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "history-room-stats.csv";
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
 
 /* ---------- local answer checking (fallback when qbreader's judge is unreachable) ---------- */
 function normalize(s) {
@@ -291,83 +322,96 @@ const CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Literata:ital,opsz,wght@0,7..72,400;0,7..72,600;1,7..72,400&family=Atkinson+Hyperlegible:wght@400;700&display=swap');
 .hr { --paper:#EDEFE9; --paper-2:#E1E5DE; --ink:#16232C; --ink-2:#3E4C56; --muted:#6E7A82; --rule:#C4CBC5;
   --slate:#22303A; --slate-2:#2C3D49; --slate-3:#3A4C59; --amber:#F0B33A; --amber-2:#9A6B12; --green:#2F8F63; --red:#CC4A2E;
+  --field:#FFFFFF; --card:rgba(255,255,255,.55); --card-2:rgba(34,48,58,.06); --pressed:#22303A; --scale:1;
   font-family:"Atkinson Hyperlegible","Avenir Next","Segoe UI",system-ui,sans-serif; color:var(--ink); background:var(--paper); min-height:100vh; }
+.hr[data-theme="dark"] { --paper:#161C21; --paper-2:#1D252C; --ink:#E6EBEE; --ink-2:#C0CAD1; --muted:#8B98A3; --rule:#37434D;
+  --slate:#0E1316; --slate-2:#1A2229; --slate-3:#2A353E; --amber-2:#E2A93A; --green:#4FB283; --red:#E06A50;
+  --field:#0F1519; --card:rgba(255,255,255,.06); --card-2:rgba(255,255,255,.05); --pressed:#3A4C59; }
 .hr * { box-sizing:border-box; }
 .hr .serif { font-family:Literata,"Iowan Old Style","Palatino Linotype",Georgia,serif; }
 .hr button { font:inherit; cursor:pointer; }
 .hr button:focus-visible, .hr input:focus-visible, .hr select:focus-visible, .hr textarea:focus-visible { outline:3px solid var(--amber); outline-offset:2px; }
-.hr .top { background:var(--slate); color:#F3F5F2; padding:14px 22px; display:flex; align-items:baseline; gap:22px; flex-wrap:wrap; }
+.hr .top { background:var(--slate); color:#F3F5F2; padding:12px 22px; display:flex; align-items:center; gap:18px; flex-wrap:wrap; }
 .hr .top h1 { margin:0; font-size:1.35rem; font-weight:600; letter-spacing:.01em; }
+.hr .titlebtn { background:none; border:0; color:inherit; font:inherit; padding:0; cursor:pointer; }
+.hr .titlebtn:hover { color:var(--amber); }
 .hr .top .sub { color:#B9C4CC; font-size:.9rem; }
 .hr .tabs { margin-left:auto; display:flex; gap:4px; }
 .hr .tab { background:transparent; color:#D7DEE3; border:0; padding:8px 12px; border-radius:6px; }
 .hr .tab[aria-current="page"] { background:var(--slate-3); color:#fff; }
-.hr .main { display:grid; grid-template-columns:280px 1fr; min-height:calc(100vh - 110px); }
-.hr .rail { background:var(--paper-2); border-right:1px solid var(--rule); padding:18px 18px 28px; }
-.hr .rail h2, .hr .panel h2 { font-size:.95rem; margin:18px 0 8px; font-weight:700; color:var(--ink-2); }
+.hr .tools { display:flex; gap:6px; align-items:center; margin-left:10px; }
+.hr .tool { background:transparent; color:#D7DEE3; border:1px solid rgba(255,255,255,.22); border-radius:6px; padding:5px 9px; font-size:.85rem; }
+.hr .tool:hover { border-color:var(--amber); color:#fff; }
+.hr .main { display:grid; grid-template-columns:290px 1fr; min-height:calc(100vh - 62px); }
+.hr .main[data-focus="true"] { grid-template-columns:1fr; }
+.hr .main[data-focus="true"] .rail { display:none; }
+.hr .rail { background:var(--paper-2); border-right:1px solid var(--rule); padding:18px 18px 40px; }
+.hr .rail h2, .hr .panel h2 { font-size:.95rem; margin:20px 0 8px; font-weight:700; color:var(--ink-2); }
 .hr .rail h2:first-child { margin-top:0; }
 .hr .choice { display:block; width:100%; text-align:left; background:transparent; border:1px solid transparent; border-radius:6px; padding:7px 9px; color:var(--ink); margin-bottom:2px; }
-.hr .choice:hover { background:rgba(0,0,0,.05); }
-.hr .choice[aria-pressed="true"] { background:var(--slate); color:#fff; }
+.hr .choice:hover { background:rgba(127,127,127,.12); }
+.hr .choice[aria-pressed="true"] { background:var(--pressed); color:#fff; }
 .hr .choice:disabled { opacity:.45; cursor:default; }
 .hr .choice small { display:block; color:inherit; opacity:.7; font-size:.78rem; }
 .hr .chips { display:flex; flex-wrap:wrap; gap:6px; }
 .hr .chip { border:1px solid var(--rule); background:transparent; border-radius:999px; padding:4px 11px; font-size:.85rem; color:var(--ink); }
-.hr .chip[aria-pressed="true"] { background:var(--ink); color:#fff; border-color:var(--ink); }
+.hr .chip[aria-pressed="true"] { background:var(--pressed); color:#fff; border-color:var(--pressed); }
 .hr .row { display:flex; align-items:center; justify-content:space-between; gap:10px; margin:6px 0; font-size:.9rem; }
-.hr .toggle { width:42px; height:24px; border-radius:12px; border:0; background:#B8C0BB; position:relative; flex:none; }
+.hr .toggle { width:42px; height:24px; border-radius:12px; border:0; background:#8F9A95; position:relative; flex:none; }
 .hr .toggle[aria-checked="true"] { background:var(--green); }
 .hr .toggle::after { content:""; position:absolute; top:3px; left:3px; width:18px; height:18px; border-radius:50%; background:#fff; transition:left .15s; }
 .hr .toggle[aria-checked="true"]::after { left:21px; }
 @media (prefers-reduced-motion: reduce) { .hr .toggle::after { transition:none; } }
-.hr input[type=range] { width:100%; accent-color:var(--slate); }
-.hr .field { width:100%; font:inherit; padding:8px 10px; border:1px solid var(--rule); border-radius:6px; background:#fff; color:var(--ink); }
+.hr input[type=range] { width:100%; accent-color:var(--pressed); }
+.hr .field { width:100%; font:inherit; padding:8px 10px; border:1px solid var(--rule); border-radius:6px; background:var(--field); color:var(--ink); }
 .hr textarea.field { min-height:220px; font-family:Literata,Georgia,serif; line-height:1.5; }
-.hr .stage { padding:26px 34px 120px; max-width:880px; }
+.hr .stage { padding:26px 34px 40px; max-width:980px; }
 .hr .meta { color:var(--muted); font-size:.9rem; margin-bottom:10px; display:flex; gap:14px; flex-wrap:wrap; }
-.hr .packet { font-size:1.28rem; line-height:1.7; max-width:64ch; min-height:7.5em; margin:0; }
+.hr .packet { font-size:calc(1.3rem * var(--scale)); line-height:1.7; max-width:68ch; min-height:6em; margin:0; }
 .hr .packet .mark { display:inline-block; width:2px; height:1em; background:var(--amber-2); vertical-align:-0.15em; margin:0 6px; }
 .hr .packet .after { color:var(--ink-2); }
-.hr .empty { color:var(--ink-2); font-size:1.05rem; line-height:1.6; max-width:56ch; }
+.hr .empty { color:var(--ink-2); font-size:calc(1.05rem * var(--scale)); line-height:1.6; max-width:58ch; }
 .hr .console { display:flex; align-items:center; gap:22px; margin-top:26px; flex-wrap:wrap; }
+.hr .hint { color:var(--muted); font-size:.9rem; margin:10px 0 0; }
 .hr .buzzer { width:104px; height:104px; border-radius:50%; border:7px solid #33434F; background:radial-gradient(circle at 40% 35%, #4C5F6D, #26343E 70%); color:#DDE4E8; font-weight:700; font-size:1rem; letter-spacing:.02em; box-shadow:0 0 0 0 rgba(240,179,58,0); }
-.hr .buzzer[data-state="armed"] { border-color:#6A5A2A; }
+.hr .buzzer[data-state="armed"] { border-color:#B78A2A; }
 .hr .buzzer[data-state="late"] { border-color:#7A6A3A; color:#F3E3B6; }
 .hr .buzzer[data-state="buzzed"], .hr .buzzer[data-state="judging"] { border-color:var(--amber); box-shadow:0 0 0 8px rgba(240,179,58,.25), 0 0 34px rgba(240,179,58,.7); color:#fff; }
 .hr .buzzer[data-state="correct"] { border-color:var(--green); box-shadow:0 0 0 8px rgba(47,143,99,.22), 0 0 30px rgba(47,143,99,.55); }
 .hr .buzzer[data-state="wrong"] { border-color:var(--red); box-shadow:0 0 0 8px rgba(204,74,46,.22), 0 0 30px rgba(204,74,46,.55); }
 .hr .buzzer:disabled { cursor:default; }
-.hr .answer { display:flex; gap:8px; flex:1; min-width:260px; align-items:center; }
-.hr .answer input { flex:1; font-size:1.1rem; padding:10px 12px; border:1px solid var(--rule); border-radius:6px; background:#fff; color:var(--ink); }
-.hr .btn { background:var(--slate); color:#fff; border:0; border-radius:6px; padding:10px 16px; font-weight:700; }
+.hr .answer { display:flex; gap:8px; flex:1; min-width:260px; align-items:center; flex-wrap:wrap; }
+.hr .answer input { flex:1; min-width:200px; font-size:calc(1.1rem * var(--scale)); padding:10px 12px; border:1px solid var(--rule); border-radius:6px; background:var(--field); color:var(--ink); }
+.hr .btn { background:var(--pressed); color:#fff; border:0; border-radius:6px; padding:10px 16px; font-weight:700; }
+.hr .btn.primary { padding:12px 22px; font-size:1.05rem; }
 .hr .btn.quiet { background:transparent; color:var(--ink); border:1px solid var(--rule); font-weight:400; }
 .hr .btn.small { padding:6px 10px; font-size:.85rem; }
 .hr .btn:disabled { opacity:.45; cursor:default; }
 .hr .clock { color:var(--amber-2); font-weight:700; min-width:3ch; text-align:right; }
-.hr .prompt { color:var(--amber-2); font-weight:700; margin-top:10px; }
-.hr .verdict { margin-top:22px; padding:14px 16px 14px 18px; border-left:5px solid var(--rule); background:rgba(255,255,255,.55); border-radius:0 8px 8px 0; max-width:64ch; }
+.hr .prompt { color:var(--amber-2); font-weight:700; margin-top:10px; font-size:calc(1rem * var(--scale)); }
+.hr .verdict { margin-top:22px; padding:14px 16px 14px 18px; border-left:5px solid var(--rule); background:var(--card); border-radius:0 8px 8px 0; max-width:68ch; font-size:calc(1rem * var(--scale)); }
 .hr .verdict[data-tone="correct"] { border-left-color:var(--green); }
 .hr .verdict[data-tone="wrong"] { border-left-color:var(--red); }
 .hr .verdict[data-tone="dead"] { border-left-color:var(--muted); }
-.hr .verdict .head { font-weight:700; font-size:1.05rem; }
+.hr .verdict .head { font-weight:700; font-size:1.05em; }
 .hr .verdict .hook { color:var(--ink-2); margin-top:6px; line-height:1.5; }
-.hr .verdict .actions { margin-top:10px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
-.hr .bonus { margin-top:18px; padding:14px 16px; background:rgba(34,48,58,.06); border-radius:8px; max-width:64ch; }
+.hr .verdict .actions { margin-top:10px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; font-size:.9rem; }
+.hr .bonus { margin-top:18px; padding:14px 16px; background:var(--card-2); border-radius:8px; max-width:68ch; font-size:calc(1rem * var(--scale)); }
 .hr .bonus p { margin:6px 0; line-height:1.55; }
-.hr .ticker { position:fixed; left:0; right:0; bottom:0; background:var(--slate); color:#E8EDF0; padding:12px 22px; font-size:.95rem; line-height:1.45; border-top:3px solid var(--amber); }
+.hr .ticker { position:sticky; bottom:0; margin:28px -34px 0; padding:11px 34px; background:var(--slate); color:#E8EDF0; font-size:.95rem; line-height:1.45; border-top:3px solid var(--amber); z-index:2; }
 .hr .ticker b { color:#fff; }
-.hr .panel { padding:26px 34px 120px; max-width:980px; }
+.hr .panel { padding:26px 34px 40px; max-width:980px; }
 .hr table { border-collapse:collapse; width:100%; font-size:.93rem; margin:8px 0 18px; }
 .hr th { text-align:left; font-weight:700; color:var(--ink-2); border-bottom:2px solid var(--ink); padding:6px 8px 6px 0; }
 .hr td { border-bottom:1px solid var(--rule); padding:7px 8px 7px 0; }
 .hr td.num, .hr th.num { text-align:right; }
 .hr .gauges { display:grid; grid-template-columns:repeat(auto-fit, minmax(200px,1fr)); gap:14px; margin:10px 0 22px; }
-.hr .gauge { background:rgba(255,255,255,.6); border-radius:8px; padding:12px 14px; }
+.hr .gauge { background:var(--card); border-radius:8px; padding:12px 14px; }
 .hr .gauge .val { font-size:1.6rem; font-weight:700; }
 .hr .gauge .val[data-ok="true"] { color:var(--green); }
 .hr .gauge .val[data-ok="false"] { color:var(--red); }
-.hr .gauge .bar { height:6px; background:var(--paper-2); border-radius:3px; margin-top:8px; overflow:hidden; }
-.hr .gauge .bar i { display:block; height:100%; background:var(--slate); }
+.hr .gauge .bar { height:6px; background:var(--rule); border-radius:3px; margin-top:8px; overflow:hidden; }
+.hr .gauge .bar i { display:block; height:100%; background:var(--pressed); }
 .hr .gauge small { color:var(--muted); display:block; margin-top:4px; }
 .hr .list { list-style:none; padding:0; margin:8px 0; }
 .hr .list li { display:flex; gap:12px; align-items:flex-start; padding:9px 0; border-bottom:1px solid var(--rule); line-height:1.5; }
@@ -375,15 +419,16 @@ const CSS = `
 .hr .list li .h { color:var(--ink-2); flex:1; }
 .hr .note { color:var(--muted); font-size:.9rem; line-height:1.5; max-width:64ch; }
 .hr .err { color:var(--red); margin-top:12px; line-height:1.5; }
-.hr .lightning-q { font-size:1.3rem; line-height:1.6; margin:18px 0 12px; max-width:60ch; }
+.hr .lightning-q { font-size:calc(1.3rem * var(--scale)); line-height:1.6; margin:18px 0 12px; max-width:60ch; }
 .hr .lightning-time { font-size:2.4rem; font-weight:700; color:var(--amber-2); }
-.hr .players input { font:inherit; padding:8px 10px; border:1px solid var(--rule); border-radius:6px; background:#fff; margin-right:8px; }
-.hr pre.sample { background:rgba(255,255,255,.6); padding:12px 14px; border-radius:8px; font-size:.85rem; line-height:1.5; white-space:pre-wrap; max-width:64ch; }
+.hr .players input { font:inherit; padding:8px 10px; border:1px solid var(--rule); border-radius:6px; background:var(--field); color:var(--ink); margin-right:8px; }
+.hr pre.sample { background:var(--card); padding:12px 14px; border-radius:8px; font-size:.85rem; line-height:1.5; white-space:pre-wrap; max-width:64ch; }
 @media (max-width: 880px) {
   .hr .main { grid-template-columns:1fr; }
   .hr .rail { border-right:0; border-bottom:1px solid var(--rule); }
-  .hr .stage, .hr .panel { padding:20px 18px 130px; }
-  .hr .packet { font-size:1.15rem; }
+  .hr .stage, .hr .panel { padding:20px 18px 40px; }
+  .hr .ticker { margin:24px -18px 0; padding:10px 18px; }
+  .hr .tabs { margin-left:0; }
 }
 `;
 
@@ -489,7 +534,7 @@ function ReadView({ settings, players, results, sessionId, addResult, replaceRes
   useEffect(() => { currentRef.current = current; }, [current]);
   useEffect(() => { revealedRef.current = revealed; }, [revealed]);
 
-  const { source, mode, difficulty, subcats, wpm, allowSkip, autoAdvance, teamMode, bonuses, minYear, excludeSets } = settings;
+  const { source, mode, difficulty, subcats, wpm, allowSkip, autoAdvance, teamMode, bonuses, minYear, excludeSets, sound, focus } = settings;
   const configKey = `${source}|${mode}|${difficulty}|${subcats.join(",")}|${drillMode}|${minYear}|${excludeSets}`;
   const drillAnswers = useMemo(() => drill.map((d) => d.answer), [drill]);
   const pool = useMemo(() => activeTossups(packets), [packets]);
@@ -626,9 +671,10 @@ function ReadView({ settings, players, results, sessionId, addResult, replaceRes
     interruptedRef.current = p === "reading";
     setPlayer(who || null);
     playerRef.current = who || null;
+    if (sound) beep();
     setPhase("buzzed");
     armAnswerClock();
-  }, [clearTimers, armAnswerClock]);
+  }, [clearTimers, armAnswerClock, sound]);
 
   const next = useCallback(() => {
     clearTimers();
@@ -737,6 +783,7 @@ function ReadView({ settings, players, results, sessionId, addResult, replaceRes
         {current && <span>{current.subcategory} history</span>}
         {current && current.set && phase === "result" && <span>{current.set}</span>}
         <span>{modeInfo.label}, {source === "packets" ? "your packets" : diffInfo.label.toLowerCase()}</span>
+        {focus && source === "qbreader" && <span>{subcats.length === SUBCATS.length ? "all subcategories" : subcats.join(", ")}, sets from {minYear}, {wpm} wpm</span>}
         {drillMode && <span>Drilling your misses</span>}
       </div>
 
@@ -762,7 +809,7 @@ function ReadView({ settings, players, results, sessionId, addResult, replaceRes
           </form>
         ) : (
           <div className="answer">
-            <button className="btn" onClick={next} disabled={phase === "reading" || phase === "window" || (phase === "loading" && !queue.length)}>
+            <button className="btn primary" onClick={next} disabled={phase === "reading" || phase === "window" || (phase === "loading" && !queue.length)}>
               {phase === "loading" ? "Pulling…" : current ? "Read next" : "Read"}
             </button>
             {allowSkip && (phase === "reading" || phase === "window") && <button className="btn quiet" onClick={skip}>Skip (counts as dead)</button>}
@@ -775,6 +822,14 @@ function ReadView({ settings, players, results, sessionId, addResult, replaceRes
         )}
       </div>
       {promptText && (phase === "buzzed" || phase === "judging") && <p className="prompt">{promptText}</p>}
+      <p className="hint">
+        {phase === "idle" && "Enter reads. Space buzzes."}
+        {(phase === "reading" || phase === "window") && (teamMode ? "Players buzz with 1 to 4." : "Space to buzz.")}
+        {phase === "buzzed" && "Type the answer and press Enter."}
+        {phase === "judging" && "Checking…"}
+        {phase === "result" && "Enter for the next question."}
+        {phase === "loading" && "Pulling the next question…"}
+      </p>
       {error && <p className="err">{error} <button className="btn small quiet" onClick={() => { setError(""); setRetry((r) => r + 1); }}>Try again</button></p>}
 
       {verdict && current && (
@@ -817,7 +872,9 @@ function ReadView({ settings, players, results, sessionId, addResult, replaceRes
       )}
 
       <div className="ticker" aria-live="polite">
-        {mode === "bee" ? (
+        {session.n === 0 ? (
+          <span>Nothing read yet this session. Your line will build here as you go.</span>
+        ) : mode === "bee" ? (
           <span>Bee round: <b>{session.correct}</b> correct on <b>{session.n}</b> heard, <b>{session.wrong}</b> wrong. {beeExit ? `You exited at question ${beeExit}: about ${8 + Math.max(0, Math.min(7, Math.round((35 - beeExit) / 4)))} points with the exit bonus (approximate).` : "Exit at 8 correct; the earlier you exit, the bigger the bonus."}</span>
         ) : mode === "q4" ? (
           <span>This session: <b>{session.correct}</b> of <b>{session.n}</b> ({pct(session.conv)}), {session.powers} thirties, <b>{session.pts}</b> points, celerity <b>{session.cel.toFixed(2)}</b>.</span>
@@ -1020,6 +1077,7 @@ function StatsView({ results, sessionId, drill, addDrill, clearAll, seenCount, c
       )}
       <h2 style={{ marginTop: 34 }}>Housekeeping</h2>
       <p className="note">{seenCount} qbreader questions are marked as already read on this device and won't come up again. <button className="btn small quiet" onClick={clearSeen}>Forget them</button></p>
+      <p className="note">Every recorded question, as a spreadsheet: <button className="btn small quiet" onClick={() => downloadCsv(results)} disabled={!results.length}>Download CSV</button></p>
       {!confirm ? (
         <button className="btn quiet" onClick={() => setConfirm(true)}>Clear all saved stats</button>
       ) : (
@@ -1242,15 +1300,21 @@ export default function HistoryRoom() {
   const tabs = [["read", "Read"], ["stats", "Stats"], ["lists", "Lists"], ["packets", "Packets"], ["team", "Team"]];
 
   return (
-    <div className="hr">
+    <div className="hr" data-theme={settings.theme} style={{ "--scale": settings.textScale }}>
       <style>{CSS}</style>
       <header className="top">
-        <h1 className="serif">{settings.title}</h1>
+        <h1 className="serif"><button className="titlebtn" onClick={() => { setTab("read"); window.scrollTo(0, 0); }} aria-label="Back to the reader">{settings.title}</button></h1>
         <span className="sub">History tossups in NAQT and IAC formats, from real sets, scored like a match.</span>
         <nav className="tabs" aria-label="Sections">{tabs.map(([id, label]) => <button key={id} className="tab" aria-current={tab === id ? "page" : undefined} onClick={() => setTab(id)}>{label}</button>)}</nav>
+        <div className="tools">
+          <button className="tool" onClick={() => setSettings((s) => ({ ...s, textScale: Math.max(0.85, Math.round((s.textScale - 0.1) * 100) / 100) }))} aria-label="Smaller text">A−</button>
+          <button className="tool" onClick={() => setSettings((s) => ({ ...s, textScale: Math.min(1.8, Math.round((s.textScale + 0.1) * 100) / 100) }))} aria-label="Larger text">A+</button>
+          <button className="tool" onClick={() => setSettings((s) => ({ ...s, theme: s.theme === "dark" ? "light" : "dark" }))}>{settings.theme === "dark" ? "Light" : "Dark"}</button>
+          {tab === "read" && <button className="tool" onClick={() => setSettings((s) => ({ ...s, focus: !s.focus }))}>{settings.focus ? "Show setup" : "Hide setup"}</button>}
+        </div>
       </header>
       {tab === "read" && (
-        <div className="main">
+        <div className="main" data-focus={settings.focus}>
           <aside className="rail">
             <h2>Questions from</h2>
             <button className="choice" aria-pressed={settings.source === "qbreader"} onClick={() => setSource("qbreader")}>qbreader's database<small>released sets, filtered by level and year</small></button>
@@ -1264,6 +1328,9 @@ export default function HistoryRoom() {
                 </button>
               );
             })}
+            {settings.source === "qbreader" && (
+              <p className="note">The short IAC formats need packets you paste in. <button className="btn small quiet" onClick={() => setTab("packets")}>Add packets</button></p>
+            )}
             {settings.source === "qbreader" && (
               <div>
                 <h2>Difficulty</h2>
@@ -1279,10 +1346,17 @@ export default function HistoryRoom() {
             )}
             <h2>Reading speed: {settings.wpm} words a minute</h2>
             <input type="range" min="110" max="220" step="5" value={settings.wpm} onChange={(e) => setSettings((s) => ({ ...s, wpm: Number(e.target.value) }))} aria-label="Reading speed" />
+            <div className="chips" style={{ margin: "6px 0 8px" }}>
+              {[["Regional", 140], ["Nationals", 160], ["Fast", 185]].map(([label, v]) => (
+                <button key={label} className="chip" aria-pressed={settings.wpm === v} onClick={() => setSettings((s) => ({ ...s, wpm: v }))}>{label} {v}</button>
+              ))}
+            </div>
             <p className="note">Moderators at nationals read around 150 to 170. Slower than that inflates your numbers.</p>
+            <h2>Options</h2>
             <div className="row"><span>Team mode (buzz with 1 to 4)</span><button className="toggle" role="switch" aria-checked={settings.teamMode} onClick={() => setSettings((s) => ({ ...s, teamMode: !s.teamMode }))} aria-label="Team mode" /></div>
             <div className="row"><span>Auto-read the next question</span><button className="toggle" role="switch" aria-checked={settings.autoAdvance} onClick={() => setSettings((s) => ({ ...s, autoAdvance: !s.autoAdvance }))} aria-label="Auto-advance" /></div>
             <div className="row"><span>Allow skipping (skips count as dead)</span><button className="toggle" role="switch" aria-checked={settings.allowSkip} onClick={() => setSettings((s) => ({ ...s, allowSkip: !s.allowSkip }))} aria-label="Allow skipping" /></div>
+            <div className="row"><span>Buzzer sound</span><button className="toggle" role="switch" aria-checked={settings.sound} onClick={() => setSettings((s) => ({ ...s, sound: !s.sound }))} aria-label="Buzzer sound" /></div>
             <h2>Name this room</h2>
             <input className="field" value={settings.title} onChange={(e) => setSettings((s) => ({ ...s, title: e.target.value || "History Room" }))} aria-label="Room name" />
           </aside>
